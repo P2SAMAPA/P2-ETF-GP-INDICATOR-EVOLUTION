@@ -9,6 +9,7 @@ import pandas as pd
 from deap import base, creator, gp, tools, algorithms
 import operator
 import math
+import config
 
 # Protected operators
 def protected_div(x, y):
