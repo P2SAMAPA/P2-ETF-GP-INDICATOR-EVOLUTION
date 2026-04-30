@@ -33,8 +33,8 @@ LOOKBACK_DAYS = 20          # number of lagged returns for each ticker
 FEATURE_COLS = []           # will be built dynamically: lags + macro
 
 # --- GP Parameters ---
-POPULATION_SIZE = 500
-GENERATIONS = 50
+POPULATION_SIZE = 200
+GENERATIONS = 30
 HALL_OF_FAME_SIZE = 10
 CROSSOVER_PROB = 0.7
 MUTATION_PROB = 0.25
