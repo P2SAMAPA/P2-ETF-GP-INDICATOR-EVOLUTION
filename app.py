@@ -1,17 +1,16 @@
 """
 Streamlit dashboard for GP Indicator Evolution.
-Shows top formulas per ticker, consensus statistics, and backtest curves.
+Shows actionable trading recommendations for the next US trading day.
 """
 
 import streamlit as st
 import pandas as pd
 import json
-import plotly.graph_objects as go
 from huggingface_hub import HfFileSystem
 import config
 from us_calendar import next_trading_day
 
-st.set_page_config(page_title="GP Indicator Evolution", layout="wide")
+st.set_page_config(page_title="GP Indicator Evolution", layout="wide", page_icon="📈")
 st.title("🧬 P2-ETF-GP-INDICATOR-EVOLUTION")
 st.caption("Genetic Programming evolves long‑only trading indicators | Sortino fitness + transaction costs | 17‑window consensus")
 
@@ -40,34 +39,65 @@ if not data:
     st.warning("No results found. Run trainer.py first.")
     st.stop()
 
-st.sidebar.header("ℹ️ Info")
-st.sidebar.write(f"**Run date:** {data['run_date']}")
-st.sidebar.write(f"**Next trading day:** {next_trading_day()}")
-st.sidebar.write("**Fitness:** Annualised Sortino (downside deviation)")
-st.sidebar.write("**Transaction cost:** 10 bps")
+next_trade = next_trading_day()
+st.info(f"📅 **Next US trading day:** {next_trade}")
 
 universes = data['universes']
-selected_universe = st.selectbox("Select Universe", list(universes.keys()))
-universe_data = universes[selected_universe]
+universe_names = list(universes.keys())
 
-if universe_data:
-    st.header(f"📊 {selected_universe}")
-    tickers = list(universe_data.keys())
-    for ticker in tickers:
-        info = universe_data[ticker]
-        with st.expander(f"**{ticker}** – consensus reached in {info['percentage']:.1f}% of windows ({info['consensus_votes']}/{info['total_windows']})"):
-            col1, col2 = st.columns([2, 1])
-            with col1:
-                st.code(info['formula'], language='python')
-            with col2:
-                st.metric("Consensus strength", f"{info['percentage']:.0f}%")
-                st.caption(f"Votes: {info['consensus_votes']} / {info['total_windows']} windows")
-            if st.checkbox(f"Show all window formulas for {ticker}"):
-                for window, formula in info['all_windows'].items():
-                    st.markdown(f"**{window}**")
-                    st.code(formula, language='python')
-else:
-    st.info("No evolved formulas for this universe.")
+# Create tabs for each universe
+tabs = st.tabs(universe_names)
+
+for tab, universe_name in zip(tabs, universe_names):
+    with tab:
+        uni_data = universes[universe_name]
+        if not uni_data:
+            st.info("No evolved formulas for this universe.")
+            continue
+        
+        # Find the ticker with highest consensus votes
+        best_ticker = None
+        best_votes = -1
+        best_info = None
+        for ticker, info in uni_data.items():
+            if info['consensus_votes'] > best_votes:
+                best_votes = info['consensus_votes']
+                best_ticker = ticker
+                best_info = info
+        
+        if best_ticker is None:
+            st.info("No consensus reached.")
+            continue
+        
+        # Hero card for the recommended ETF
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            st.markdown(f"## 🚀 Recommended ETF for {next_trade}")
+            st.markdown(f"### {best_ticker}")
+            st.markdown(f"**Consensus:** {best_info['consensus_votes']} / {best_info['total_windows']} windows ({best_info['percentage']:.1f}%)")
+            # Truncate long formula
+            formula = best_info['formula']
+            if len(formula) > 200:
+                formula = formula[:200] + "..."
+            with st.expander("📜 Evolved Formula"):
+                st.code(formula, language='python')
+        with col2:
+            strength = "STRONG" if best_info['percentage'] >= 60 else "MODERATE" if best_info['percentage'] >= 30 else "WEAK"
+            st.metric("Signal Strength", strength)
+            st.caption(f"Based on {best_info['total_windows']} historical windows")
+        
+        # Other tickers as expandable list
+        with st.expander("🔍 See all tickers in this universe"):
+            other_df = pd.DataFrame([
+                {
+                    "Ticker": t,
+                    "Consensus %": info['percentage'],
+                    "Votes": f"{info['consensus_votes']}/{info['total_windows']}",
+                    "Formula": info['formula'][:80] + "..."
+                }
+                for t, info in uni_data.items()
+            ]).sort_values("Consensus %", ascending=False)
+            st.dataframe(other_df, use_container_width=True)
 
 st.divider()
 st.caption("Data source: P2SAMAPA/fi-etf-macro-signal-master-data | Results: P2SAMAPA/p2-etf-gp-indicator-evolution-results")
