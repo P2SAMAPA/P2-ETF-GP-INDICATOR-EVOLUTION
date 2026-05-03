@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 
 import numpy as np
 import pandas as pd
@@ -55,12 +56,104 @@ def build_window_data(
 
     return (
         X[:split],
-        y[:split],  # train
+        y[:split],
         X[split:],
-        y[split:],  # test
-        rf[split:],  # rf test
+        y[split:],
+        rf[split:],
         feature_cols,
     )
+
+
+def run_universe(
+    universe_name: str,
+    tickers: list[str],
+    returns_aligned: pd.DataFrame,
+    macro_aligned: pd.DataFrame,
+    risk_free: pd.Series,
+    pop_size: int,
+    n_gen: int,
+) -> dict:
+    """Run GP for all tickers in one universe across all windows."""
+    print(f"\n{'='*60}")
+    print(f"Universe: {universe_name}  ({len(tickers)} tickers)")
+    print(f"  GP: pop={pop_size}  gen={n_gen}")
+    print(f"{'='*60}")
+
+    ticker_window_scores: dict[str, dict] = {t: {} for t in returns_aligned.columns}
+    ticker_window_formulas: dict[str, dict] = {t: {} for t in returns_aligned.columns}
+
+    for start, end in config.CONSENSUS_WINDOWS:
+        window_label = f"{start}-{end}"
+        print(f"\n  Window {window_label}")
+
+        for ticker in returns_aligned.columns:
+            result = build_window_data(
+                ticker, start, end, returns_aligned, macro_aligned, risk_free
+            )
+            if result is None:
+                print(f"    {ticker}: insufficient data — skipping")
+                continue
+
+            X_train, y_train, X_test, y_test, rf_test, feature_cols = result
+            seed = abs(start * 100 + hash(ticker) % 100)
+            score, formula = run_gp(
+                ticker,
+                X_train,
+                y_train,
+                X_test,
+                y_test,
+                rf_test,
+                feature_cols,
+                seed=seed,
+                pop_size=pop_size,
+                n_gen=n_gen,
+            )
+            ticker_window_scores[ticker][window_label] = round(score, 4)
+            ticker_window_formulas[ticker][window_label] = formula
+            print(f"    {ticker}: Sortino={score:.3f}")
+
+    # Rank tickers by mean Sortino
+    universe_results: dict = {}
+    rankings: list[tuple[str, float]] = []
+
+    for ticker in returns_aligned.columns:
+        scores = ticker_window_scores[ticker]
+        if not scores:
+            continue
+        vals = list(scores.values())
+        mean_sortino = float(np.mean(vals))
+        positive_windows = sum(1 for s in vals if s > 0)
+        win_rate = positive_windows / len(vals)
+        best_window = max(scores, key=scores.get)
+
+        universe_results[ticker] = {
+            "mean_sortino": round(mean_sortino, 4),
+            "win_rate": round(win_rate, 4),
+            "win_rate_pct": round(win_rate * 100, 1),
+            "positive_windows": positive_windows,
+            "total_windows": len(vals),
+            "best_window": best_window,
+            "best_sortino": round(scores[best_window], 4),
+            "worst_sortino": round(min(vals), 4),
+            "window_scores": scores,
+            "best_formula": ticker_window_formulas[ticker].get(best_window, ""),
+            "all_formulas": ticker_window_formulas[ticker],
+        }
+        rankings.append((ticker, mean_sortino))
+
+    rankings.sort(key=lambda x: x[1], reverse=True)
+    for rank, (ticker, score) in enumerate(rankings, 1):
+        universe_results[ticker]["rank"] = rank
+        signal = "STRONG" if score > 0.5 else "MODERATE" if score > 0.0 else "WEAK"
+        universe_results[ticker]["signal_strength"] = signal
+        print(
+            f"  Rank {rank:2d}  {ticker:6s}  "
+            f"MeanSortino={score:.3f}  "
+            f"WinRate={universe_results[ticker]['win_rate_pct']:.0f}%  "
+            f"Signal={signal}"
+        )
+
+    return {"rankings": rankings, "tickers": universe_results}
 
 
 def main() -> None:
@@ -68,114 +161,44 @@ def main() -> None:
         print("HF_TOKEN not set — aborting.")
         return
 
+    # Which universe to run (from env var set by GitHub Actions matrix)
+    target = os.environ.get("GP_UNIVERSE", "all").upper()
+
     df = data_manager.load_master_data()
     macro = data_manager.prepare_macro_features(df)
-
-    # Daily risk-free rate from annualised T-bill
     risk_free = macro["TBILL_3M"] / 100.0
     risk_free = (1 + risk_free) ** (1 / 252) - 1
 
     all_results: dict = {}
 
     for universe_name, tickers in config.UNIVERSES.items():
-        print(f"\n{'='*60}")
-        print(f"Universe: {universe_name}  ({len(tickers)} tickers)")
-        print(f"{'='*60}")
+        if target != "ALL" and universe_name != target:
+            continue
 
         returns = data_manager.prepare_returns_matrix(df, tickers)
         macro_aligned, returns_aligned = data_manager.align_macro_returns(
             returns, macro
         )
 
-        # Per-ticker: collect Sortino scores across all windows
-        ticker_window_scores: dict[str, dict] = {t: {} for t in returns_aligned.columns}
-        ticker_window_formulas: dict[str, dict] = {
-            t: {} for t in returns_aligned.columns
-        }
+        # COMBINED gets smaller GP to fit in time budget
+        if universe_name == "COMBINED":
+            pop_size, n_gen = 150, 30
+        else:
+            pop_size, n_gen = config.POPULATION_SIZE, config.GENERATIONS
 
-        for start, end in config.CONSENSUS_WINDOWS:
-            window_label = f"{start}-{end}"
-            print(f"\n  Window {window_label}")
+        result = run_universe(
+            universe_name,
+            tickers,
+            returns_aligned,
+            macro_aligned,
+            risk_free,
+            pop_size,
+            n_gen,
+        )
+        all_results[universe_name] = result
 
-            for ticker in returns_aligned.columns:
-                result = build_window_data(
-                    ticker, start, end, returns_aligned, macro_aligned, risk_free
-                )
-                if result is None:
-                    print(f"    {ticker}: insufficient data — skipping")
-                    continue
-
-                X_train, y_train, X_test, y_test, rf_test, feature_cols = result
-
-                # Use window start year as seed for reproducibility
-                seed = start * 100 + hash(ticker) % 100
-                score, formula = run_gp(
-                    ticker,
-                    X_train,
-                    y_train,
-                    X_test,
-                    y_test,
-                    rf_test,
-                    feature_cols,
-                    seed=abs(seed),
-                )
-                ticker_window_scores[ticker][window_label] = round(score, 4)
-                ticker_window_formulas[ticker][window_label] = formula
-                print(f"    {ticker}: Sortino={score:.3f}")
-
-        # Aggregate: rank tickers by mean Sortino across windows
-        universe_results: dict = {}
-        rankings: list[tuple[str, float]] = []
-
-        for ticker in returns_aligned.columns:
-            scores = ticker_window_scores[ticker]
-            if not scores:
-                continue
-            score_values = list(scores.values())
-            mean_sortino = float(np.mean(score_values))
-            positive_windows = sum(1 for s in score_values if s > 0)
-            win_rate = positive_windows / len(score_values)
-            best_window = max(scores, key=scores.get)
-            best_score = scores[best_window]
-
-            universe_results[ticker] = {
-                "mean_sortino": round(mean_sortino, 4),
-                "win_rate": round(win_rate, 4),
-                "win_rate_pct": round(win_rate * 100, 1),
-                "positive_windows": positive_windows,
-                "total_windows": len(score_values),
-                "best_window": best_window,
-                "best_sortino": round(best_score, 4),
-                "worst_sortino": round(min(score_values), 4),
-                "window_scores": scores,
-                "best_formula": ticker_window_formulas[ticker].get(best_window, ""),
-                "all_formulas": ticker_window_formulas[ticker],
-            }
-            rankings.append((ticker, mean_sortino))
-
-        # Sort by mean Sortino descending
-        rankings.sort(key=lambda x: x[1], reverse=True)
-        for rank, (ticker, score) in enumerate(rankings, 1):
-            universe_results[ticker]["rank"] = rank
-            signal = "STRONG" if score > 0.5 else "MODERATE" if score > 0.0 else "WEAK"
-            universe_results[ticker]["signal_strength"] = signal
-            print(
-                f"  Rank {rank:2d}  {ticker:6s}  "
-                f"MeanSortino={score:.3f}  "
-                f"WinRate={universe_results[ticker]['win_rate_pct']:.0f}%  "
-                f"Signal={signal}"
-            )
-
-        all_results[universe_name] = {
-            "rankings": rankings,
-            "tickers": universe_results,
-        }
-
-    output = {
-        "run_date": config.TODAY,
-        "universes": all_results,
-    }
-    push_results.push_daily_result(output)
+    output = {"run_date": config.TODAY, "universes": all_results}
+    push_results.push_daily_result(output, universe=target)
     print("\n✅ Evolution complete — results pushed to HuggingFace.")
 
 
