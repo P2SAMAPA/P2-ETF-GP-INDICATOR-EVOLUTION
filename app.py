@@ -32,8 +32,25 @@ def load_latest() -> dict | None:
         json_files = sorted([f for f in files if f.endswith(".json")])
         if not json_files:
             return None
-        with fs.open(json_files[-1], "r") as fp:
-            return json.load(fp)
+
+        # Load the most recent file per universe (parallel jobs write separate files)
+        universe_files: dict[str, str] = {}
+        for f in json_files:
+            name = f.split("/")[-1]  # basename
+            # filename: gp_indicator_YYYY-MM-DD_universe-slug.json
+            parts = name.replace(".json", "").split("_")
+            universe_slug = parts[-1] if len(parts) >= 3 else "all"
+            universe_files[universe_slug] = f  # keeps latest (files are sorted)
+
+        merged_universes: dict = {}
+        run_date = "unknown"
+        for slug, filepath in universe_files.items():
+            with fs.open(filepath, "r") as fp:
+                data = json.load(fp)
+            run_date = data.get("run_date", run_date)
+            merged_universes.update(data.get("universes", {}))
+
+        return {"run_date": run_date, "universes": merged_universes}
     except Exception as e:
         st.error(f"Failed to load results: {e}")
         return None
