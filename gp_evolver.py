@@ -102,8 +102,12 @@ def run_gp(
     rf_test: np.ndarray,
     feature_names: list[str],
     seed: int = 42,
+    pop_size: int | None = None,
+    n_gen: int | None = None,
 ) -> tuple[float, str]:
     """Run GP evolution and return (best_sortino_score, formula_string)."""
+    pop_size = pop_size or config.POPULATION_SIZE
+    n_gen = n_gen or config.GENERATIONS
     random.seed(seed)
     np.random.seed(seed)
 
@@ -147,7 +151,7 @@ def run_gp(
     toolbox.decorate("mate", depth_limit)
     toolbox.decorate("mutate", depth_limit)
 
-    pop = toolbox.population(n=config.POPULATION_SIZE)
+    pop = toolbox.population(n=pop_size)
     hof = tools.HallOfFame(config.HALL_OF_FAME_SIZE)
 
     stats = tools.Statistics(lambda ind: ind.fitness.values)
@@ -159,7 +163,7 @@ def run_gp(
         toolbox,
         cxpb=config.CROSSOVER_PROB,
         mutpb=config.MUTATION_PROB,
-        ngen=config.GENERATIONS,
+        ngen=n_gen,
         halloffame=hof,
         stats=stats,
         verbose=False,
