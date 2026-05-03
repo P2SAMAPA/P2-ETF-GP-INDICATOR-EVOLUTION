@@ -232,7 +232,7 @@ for tab, universe_name in zip(tabs, tab_labels):
                         "Best Sortino": "{:.3f}",
                         "Worst Sortino": "{:.3f}",
                     }
-                ).background_gradient(subset=["Mean Sortino"], cmap="RdYlGn"),
+                ),
                 use_container_width=True,
                 height=max(300, len(ranks_df) * 35 + 40),
             )
