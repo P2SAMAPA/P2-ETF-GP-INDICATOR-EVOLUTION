@@ -7,7 +7,6 @@ import json
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from huggingface_hub import HfFileSystem
 
 import config
 from us_calendar import next_trading_day
@@ -27,26 +26,37 @@ RANK_COLOURS = ["#FFD700", "#C0C0C0", "#CD7F32"]  # gold / silver / bronze
 @st.cache_data(ttl=3600, show_spinner="Loading latest GP results…")
 def load_latest() -> dict | None:
     try:
-        fs = HfFileSystem(token=config.HF_TOKEN)
-        files = fs.ls(f"datasets/{config.HF_OUTPUT_REPO}", detail=False)
-        json_files = sorted([f for f in files if f.endswith(".json")])
+        import requests
+
+        api_url = (
+            f"https://huggingface.co/api/datasets/{config.HF_OUTPUT_REPO}/tree/main"
+        )
+        headers = (
+            {"Authorization": f"Bearer {config.HF_TOKEN}"} if config.HF_TOKEN else {}
+        )
+        resp = requests.get(api_url, headers=headers, timeout=30)
+        resp.raise_for_status()
+        all_files = [f["path"] for f in resp.json() if f["path"].endswith(".json")]
+        json_files = sorted(all_files)
         if not json_files:
             return None
 
-        # Load the most recent file per universe (parallel jobs write separate files)
+        # Load the most recent file per universe slug
         universe_files: dict[str, str] = {}
-        for f in json_files:
-            name = f.split("/")[-1]  # basename
-            # filename: gp_indicator_YYYY-MM-DD_universe-slug.json
+        for path in json_files:
+            name = path.split("/")[-1]
             parts = name.replace(".json", "").split("_")
             universe_slug = parts[-1] if len(parts) >= 3 else "all"
-            universe_files[universe_slug] = f  # keeps latest (files are sorted)
+            universe_files[universe_slug] = path  # keeps latest (sorted)
 
         merged_universes: dict = {}
         run_date = "unknown"
-        for slug, filepath in universe_files.items():
-            with fs.open(filepath, "r") as fp:
-                data = json.load(fp)
+        base = f"https://huggingface.co/datasets/{config.HF_OUTPUT_REPO}/resolve/main"
+        for slug, path in universe_files.items():
+            url = f"{base}/{path}"
+            r = requests.get(url, headers=headers, timeout=60)
+            r.raise_for_status()
+            data = r.json()
             run_date = data.get("run_date", run_date)
             merged_universes.update(data.get("universes", {}))
 
