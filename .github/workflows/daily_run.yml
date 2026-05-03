@@ -2,13 +2,26 @@ name: Daily GP Indicator Evolution
 
 on:
   schedule:
-    - cron: "0 6 * * *"  # Daily at 06:00 UTC
+    - cron: "0 3 * * *"  # Daily at 03:00 UTC
   workflow_dispatch:
+    inputs:
+      universe:
+        description: "Universe to run (FI_COMMODITIES / EQUITY_SECTORS / COMBINED)"
+        required: false
+        default: "all"
 
 jobs:
   evolve:
+    name: Evolve — ${{ matrix.universe }}
     runs-on: ubuntu-latest
-    timeout-minutes: 300
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        universe:
+          - FI_COMMODITIES
+          - EQUITY_SECTORS
+          - COMBINED
 
     steps:
       - uses: actions/checkout@v4
@@ -24,23 +37,36 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run GP evolution
+      - name: Run GP evolution — ${{ matrix.universe }}
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          GP_UNIVERSE: ${{ matrix.universe }}
         run: python trainer.py
 
-      - name: Print summary
+      - name: Print summary — ${{ matrix.universe }}
         run: |
-          python3 - << 'EOF'
-          import json, glob, os
-          files = sorted(glob.glob("hf_cache/**/*.json", recursive=True))
+          python3 - << 'PYEOF'
+          import json, glob
+          files = sorted(glob.glob("results_*.json"))
           if not files:
-              print("No local output found — results pushed to HF directly")
+              print("Results pushed directly to HF")
           else:
               with open(files[-1]) as f:
                   data = json.load(f)
-              for uni, results in data.get("universes", {}).items():
-                  print(f"\n=== {uni} ===")
-                  for ticker, (_, score) in enumerate(results.get("rankings", [])[:5]):
-                      print(f"  #{ticker+1} {score}")
-          EOF
+              uni = list(data.get("universes", {}).keys())[0]
+              print(f"\n=== {uni} ===")
+              results = data["universes"][uni]
+              for ticker, info in sorted(
+                  results["tickers"].items(),
+                  key=lambda x: x[1].get("rank", 99)
+              )[:5]:
+                  print(f"  #{info['rank']} {ticker}  MeanSortino={info['mean_sortino']:.3f}  WinRate={info['win_rate_pct']:.0f}%")
+          PYEOF
+
+      - name: Upload artifacts — ${{ matrix.universe }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: gp-results-${{ matrix.universe }}-${{ github.run_id }}
+          path: results_*.json
+          retention-days: 30
+          if-no-files-found: ignore
