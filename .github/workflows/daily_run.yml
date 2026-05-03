@@ -2,25 +2,45 @@ name: Daily GP Indicator Evolution
 
 on:
   schedule:
-    - cron: '0 6 * * *'   # Daily at 6 AM UTC
-  workflow_dispatch:       # Manual trigger
+    - cron: "0 6 * * *"  # Daily at 06:00 UTC
+  workflow_dispatch:
 
 jobs:
   evolve:
     runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+    timeout-minutes: 300
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install numpy (pinned)
+        run: pip install "numpy>=1.24.0,<2.0.0"
 
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run evolution
+      - name: Run GP evolution
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python trainer.py
+
+      - name: Print summary
+        run: |
+          python3 - << 'EOF'
+          import json, glob, os
+          files = sorted(glob.glob("hf_cache/**/*.json", recursive=True))
+          if not files:
+              print("No local output found — results pushed to HF directly")
+          else:
+              with open(files[-1]) as f:
+                  data = json.load(f)
+              for uni, results in data.get("universes", {}).items():
+                  print(f"\n=== {uni} ===")
+                  for ticker, (_, score) in enumerate(results.get("rankings", [])[:5]):
+                      print(f"  #{ticker+1} {score}")
+          EOF
